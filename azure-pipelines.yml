@@ -1,0 +1,218 @@
+variables:
+  CurrentSemanticVersionBase: '1.0.0'
+  PreviewNumber: $[counter(variables['CurrentSemanticVersionBase'], 1001)]
+  CurrentSemanticVersion: '$(CurrentSemanticVersionBase)-preview$(PreviewNumber)'
+  NugetPackageVersion: '$(CurrentSemanticVersion)'
+  TOOLKIT_NET_VERSION: '7.0.x'
+  LATEST_NET_VERSION: '7.0.x'
+  PathToLibrarySolution: 'src/CommunityToolkit.Maui.sln'
+  PathToSamplesSolution: 'samples/CommunityToolkit.Maui.Sample.sln'
+  PathToCommunityToolkitCsproj: 'src/CommunityToolkit.Maui/CommunityToolkit.Maui.csproj'
+  PathToCommunityToolkitCoreCsproj: 'src/CommunityToolkit.Maui.Core/CommunityToolkit.Maui.Core.csproj'
+  PathToCommunityToolkitSampleCsproj: 'samples/CommunityToolkit.Maui.Sample/CommunityToolkit.Maui.Sample.csproj'
+  PathToCommunityToolkitUnitTestCsproj: 'src/CommunityToolkit.Maui.UnitTests/CommunityToolkit.Maui.UnitTests.csproj'
+  PathToCommunityToolkitAnalyzersCsproj: 'src/CommunityToolkit.Maui.Analyzers/CommunityToolkit.Maui.Analyzers.csproj'
+  PathToCommunityToolkitSourceGeneratorsCsproj: 'src/CommunityToolkit.Maui.SourceGenerators/CommunityToolkit.Maui.SourceGenerators.csproj'
+  PathToCommunityToolkitAnalyzersCodeFixCsproj: 'src/CommunityToolkit.Maui.Analyzers.CodeFixes/CommunityToolkit.Maui.Analyzers.CodeFixes.csproj'
+  PathToCommunityToolkitAnalyzersUnitTestCsproj: 'src/CommunityToolkit.Maui.Analyzers.UnitTests/CommunityToolkit.Maui.Analyzers.UnitTests.csproj'
+  DotNetMauiRollbackFile: 'https://maui.blob.core.windows.net/metadata/rollbacks/7.0.49.json'
+  ShouldCheckDependencies: true
+
+trigger:
+  branches:
+    include:
+    - main
+    - develop
+  tags:
+    include:
+    - '*'
+  paths:
+    exclude:
+    - README.md
+
+pr:
+  autoCancel: 'true'
+  branches:
+    include:
+    - main
+    - develop
+  paths:
+    exclude:
+    - README.md
+
+jobs:
+  - job: build_sample
+    displayName: Build Sample App using Latest .NET SDK
+    strategy:
+      matrix:
+        'Windows':
+          image: 'windows-latest'
+        'macOS':
+          image: 'macos-12'
+    pool:
+      vmImage: $(image)
+    steps:
+      - task: UseDotNet@2
+        displayName: 'Install Latest .NET SDK'
+        inputs:
+          packageType: 'sdk'
+          version: '$(LATEST_NET_VERSION)'
+          includePreviewVersions: true
+
+      - powershell: dotnet workload install maui
+        displayName: Install Latest .NET MAUI Workload
+
+      - pwsh: |
+          Invoke-WebRequest 'https://raw.githubusercontent.com/Samsung/Tizen.NET/main/workload/scripts/workload-install.ps1' -OutFile 'workload-install.ps1'
+          .\workload-install.ps1
+        displayName: Install Tizen Workload
+
+      # build sample
+      - task: CmdLine@2
+        displayName: 'Build Community Toolkit Sample'
+        inputs:
+          script: |
+            dotnet build $(PathToCommunityToolkitSampleCsproj) -c Release
+
+  - job: build_library
+    displayName: Build Library
+    strategy:
+      matrix:
+        'Windows':
+          image: 'windows-latest'
+        'macOS':
+          image: 'macos-12'
+    pool:
+      vmImage: $(image)
+    steps:
+      # if this is a tagged build, then update the version number
+      - powershell: |
+          $buildSourceBranch = "$(Build.SourceBranch)"
+          $tagVersion = $buildSourceBranch.Substring($buildSourceBranch.LastIndexOf("/") + 1)
+          Write-Host("Branch = $buildSourceBranch, Version = $tagVersion");
+          Write-Host ("##vso[task.setvariable variable=NugetPackageVersion;]$tagVersion")
+        displayName: Set NuGet Version to Tag Number
+        condition: startsWith(variables['Build.SourceBranch'], 'refs/tags/')
+
+      # if this is a PR build, then update the version number
+      - powershell: |
+          $prNumber = $env:System_PullRequest_PullRequestNumber
+          $commitId = "$($env:System_PullRequest_SourceCommitId)".Substring(0, 7)
+          $fullVersionString = "$(CurrentSemanticVersionBase)-build-$prNumber.$(Build.BuildId)+$commitId"
+          Write-Host("GitHub PR = $prNumber, Commit = $commitId");
+          Write-Host ("##vso[task.setvariable variable=NugetPackageVersion;]$fullVersionString")
+          Write-Host "##vso[build.updatebuildnumber]$fullVersionString"
+        displayName: Set NuGet Version to PR Version
+        condition: and(succeeded(), ne( variables['Agent.OS'], 'Darwin' ), eq(variables['build.reason'], 'PullRequest'))
+
+      - task: UseDotNet@2
+        displayName: Install .NET $(TOOLKIT_NET_VERSION)
+        inputs:
+          packageType: 'sdk'
+          version: '$(TOOLKIT_NET_VERSION)'
+          includePreviewVersions: true
+
+      - task: CmdLine@2
+        displayName: 'Install .NET MAUI Workload $(TOOLKIT_NET_VERSION)'
+        inputs:
+          script: dotnet workload install maui
+
+      - pwsh: |
+          Invoke-WebRequest 'https://raw.githubusercontent.com/Samsung/Tizen.NET/main/workload/scripts/workload-install.ps1' -OutFile 'workload-install.ps1'
+          .\workload-install.ps1
+        displayName: Install Tizen Workload
+
+      - task: CmdLine@2
+        displayName: 'Build CommunityToolkit.Maui.Analyzers'
+        inputs:
+          script: 'dotnet build -c Release $(PathToCommunityToolkitAnalyzersCsproj)'
+
+      - task: CmdLine@2
+        displayName: 'Build CommunityToolkit.Maui.Analyzers.CodeFixes'
+        inputs:
+          script: 'dotnet build -c Release $(PathToCommunityToolkitAnalyzersCodeFixCsproj)'
+
+      - task: CmdLine@2
+        displayName: 'Build CommunityToolkit.Maui.SourceGenerators'
+        inputs:
+          script: 'dotnet build -c Release $(PathToCommunityToolkitSourceGeneratorsCsproj)'
+
+      - task: CmdLine@2
+        displayName: 'Run CommunityToolkit.Maui.Analyzers.UnitTests'
+        inputs:
+          script: 'dotnet test $(PathToCommunityToolkitAnalyzersUnitTestCsproj) -c Release'
+
+      - task: CmdLine@2
+        displayName: 'Run CommunityToolkit.Maui.UnitTests'
+        inputs:
+          script: 'dotnet test $(PathToCommunityToolkitUnitTestCsproj) -c Release --settings ".runsettings" --collect "XPlat code coverage" --logger trx --results-directory $(Agent.TempDirectory)'
+
+      - task: PublishTestResults@2
+        condition: ne( variables['Agent.OS'], 'Darwin' )
+        displayName: 'Publish Test Results'
+        inputs:
+          testResultsFormat: VSTest
+          testResultsFiles: '**/*.trx'
+          searchFolder: $(Agent.TempDirectory)
+
+      - task: PublishCodeCoverageResults@1
+        condition: ne( variables['Agent.OS'], 'Darwin' )
+        displayName: 'Publish Code Coverage Results'
+        inputs:
+          codeCoverageTool: 'Cobertura'
+          summaryFileLocation: '$(Agent.TempDirectory)/**/coverage.cobertura.xml'
+          failIfCoverageEmpty: true
+
+      - task: CmdLine@2
+        displayName: 'Pack CommunityToolkit.Maui.Core NuGet'
+        inputs:
+          script: 'dotnet pack $(PathToCommunityToolkitCoreCsproj) -c Release -p:PackageVersion=$(NugetPackageVersion)'
+
+      - task: CmdLine@2
+        displayName: 'Pack CommunityToolkit.Maui NuGet'
+        inputs:
+          script: 'dotnet pack $(PathToCommunityToolkitCsproj) -c Release -p:PackageVersion=$(NugetPackageVersion)'
+
+      # check vulnerabilities
+      - powershell: |
+          dotnet list $(PathToLibrarySolution) package --vulnerable --include-transitive | findstr /S /c:"has the following vulnerable packages";
+          if ($LastExitCode -ne 1)
+          {
+            dotnet list $(PathToLibrarySolution) package --vulnerable --include-transitive;
+            exit 1;
+          }
+
+          exit 0;
+        displayName: 'Check Dependencies'
+        condition: and(ne( variables['Agent.OS'], 'Darwin' ), eq(variables.ShouldCheckDependencies, true))
+      
+      # publish
+      - task: PowerShell@2
+        condition: ne( variables['Agent.OS'], 'Darwin' )
+        displayName: 'Copy NuGet Packages to Staging Directory'
+        inputs:
+          targetType: 'inline'
+          script: |
+            $source = ".\src"
+            $filter = "nupkg"
+            Get-ChildItem -Path $source -Recurse | Where-Object { $_.Extension -match $filter } | Copy-Item -Destination "$(Build.ArtifactStagingDirectory)"
+          pwsh: true
+      
+      # Sign NuGet Packages
+      - task: PowerShell@2
+        displayName: Authenticode Sign Packages
+        inputs:
+          filePath: build/Sign-Package.ps1
+        env:
+          SignClientUser: $(SignClientUser)
+          SignClientSecret: $(SignClientSecret)
+          ArtifactDirectory: $(Build.ArtifactStagingDirectory)
+        condition: and(succeeded(), ne( variables['Agent.OS'], 'Darwin' ), not(eq(variables['build.reason'], 'PullRequest')), not(eq(variables['SignClientSecret'], '')), not(eq(variables['SignClientUser'], '')))
+      
+      # publish the packages
+      - task: PublishBuildArtifacts@1
+        condition: ne( variables['Agent.OS'], 'Darwin' )        
+        displayName: 'Publish NuGets'
+        inputs:
+          artifactName: nuget
+          pathToPublish: '$(Build.ArtifactStagingDirectory)'
