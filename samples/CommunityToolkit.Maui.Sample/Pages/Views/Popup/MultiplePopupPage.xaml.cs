@@ -23,8 +23,8 @@ public partial class MultiplePopupPage : BasePage<MultiplePopupViewModel>
 		Timer x = new Timer(
 			new TimerCallback((s) =>
 			{
-				Shell.Current.Dispatcher.Dispatch(() => HandleButtonPopupButtonClicked(new object(), new EventArgs()));				
-			}), 
+				Shell.Current.Dispatcher.Dispatch(() => HandleButtonPopupButtonClicked(new object(), new EventArgs()));
+			}),
 			null, 5000, Timeout.Infinite);
 	}
 
